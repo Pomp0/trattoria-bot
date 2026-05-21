@@ -1,19 +1,21 @@
-"""Bot Telegram per gruppo - indicizza ristoranti e cerca per vicinanza."""
-import json, os, re, math, logging
+"""Bot Telegram per gruppo - indicizza ristoranti con LLM parsing."""
+import json, os, logging
 from pathlib import Path
-from telegram import Update, BotCommand
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from geopy.geocoders import Nominatim
 from geopy.distance import geodesic
+from groq import Groq
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8961858964:AAF5R38A6qTTTr0OMkUmZOe1K2RkMuCvV0o")
-if not TOKEN:
-    raise SystemExit("TELEGRAM_BOT_TOKEN not set. Add it as env variable or in .env file.")
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8961858964:AAE7m2Zm6KzCZBLtsPvYYNSPAP4BqHwDQvk")
+GROQ_KEY = os.environ.get("GROQ_API_KEY", "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")
+
 DB_PATH = Path(__file__).parent / "db.json"
 geolocator = Nominatim(user_agent="trattoria_bot")
+groq_client = Groq(api_key=GROQ_KEY)
 
 
 def load_db() -> list[dict]:
@@ -26,67 +28,54 @@ def save_db(db: list[dict]):
     DB_PATH.write_text(json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def parse_review(text: str) -> dict | None:
-    """Estrae nome, zona, prezzo e piatti da un testo di recensione."""
-    info = {"nome": None, "zona": None, "prezzo": None, "piatti": [], "testo": text}
-
-    # Nome: cerca pattern comuni, taglia a congiunzione/punteggiatura
-    m = re.search(r"(?:stato|andat[oa]|provato|mangiato)\s+(?:al(?:l[''a]?)?|da)\s+([A-Z][A-Za-zÀ-ú\s'']+?)(?:\s+[eè]\s|\s*[.,;!?\n]|\s+sono|\s+per|\s+dove|\s+che)", text)
-    if m:
-        info["nome"] = m.group(1).strip()
-    if not info["nome"]:
-        m = re.search(r"[\"'«]([A-Z][A-Za-zÀ-ú\s'']+?)[\"'»]", text)
-        if m:
-            info["nome"] = m.group(1).strip()
-    if not info["nome"]:
-        # Pattern: "Nome" seguito da "a/in via/piazza" o ", un/una"
-        m = re.search(r"(?:^|[\n,])\s*([A-Z][A-Za-zÀ-ú\s'']+?)\s+(?:a |in |di )?(?:via|piazza|zona|corso)", text, re.MULTILINE)
-        if m:
-            info["nome"] = m.group(1).strip().rstrip(",")
-    if not info["nome"]:
-        m = re.search(r"(?:^|[\n,])\s*([A-Z][A-Za-zÀ-ú\s'']+?),\s+(?:un|una|il|la|lo)", text, re.MULTILINE)
-        if m:
-            info["nome"] = m.group(1).strip()
-
-    # Zona: cerca "Zona X", "(Zona X)", indirizzo "via/piazza X", o città
-    m = re.search(r"\(?[Zz]ona\s+([A-Za-zÀ-ú\s]+)\)?", text)
-    if m:
-        info["zona"] = m.group(1).strip().rstrip(")")
-    if not info["zona"]:
-        m = re.search(r"(?:a |in )?(via|piazza|corso|viale|largo)\s+([A-Za-zÀ-ú\s]+?)(?:\s*[,()\n]|\s+un)", text, re.IGNORECASE)
-        if m:
-            info["zona"] = f"{m.group(1)} {m.group(2).strip()}"
-    if not info["zona"]:
-        m = re.search(r"(ROMA|Roma|Milano|Napoli|Torino|Firenze|Bologna)[^)]*\(([^)]+)\)", text)
-        if m:
-            info["zona"] = m.group(2).strip()
-        elif re.search(r"(ROMA|Roma|Milano|Napoli|Torino|Firenze|Bologna)", text):
-            info["zona"] = re.search(r"(ROMA|Roma|Milano|Napoli|Torino|Firenze|Bologna)", text).group(1)
-
-    # Prezzo: cerca €, euro, "X a testa"
-    m = re.search(r"(\d+)[€\s]*(?:a testa|euro|€)", text)
-    if m:
-        info["prezzo"] = int(m.group(1))
-    if not info["prezzo"]:
-        m = re.search(r"(?:meno di|circa|sui)\s*(\d+)\s*€", text)
-        if m:
-            info["prezzo"] = int(m.group(1))
-
-    # Piatti: cerca lista con "-" o "•"
-    piatti = re.findall(r"[-•]\s*(.+)", text)
-    info["piatti"] = [p.strip() for p in piatti[:6]]
-
-    return info if info["nome"] else None
+def parse_review_llm(text: str) -> dict | None:
+    """Usa Groq LLM per estrarre info dal testo."""
+    try:
+        resp = groq_client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[{
+                "role": "system",
+                "content": "Estrai info ristorante dal testo. Rispondi SOLO con JSON valido: {\"nome\": str, \"indirizzo\": str or null, \"citta\": str or null, \"zona\": str or null, \"prezzo_persona\": int or null, \"piatti\": [str]}. Se non è una recensione ristorante rispondi {\"nome\": null}"
+            }, {
+                "role": "user",
+                "content": text
+            }],
+            temperature=0,
+            max_tokens=300
+        )
+        raw = resp.choices[0].message.content.strip()
+        # Estrai JSON anche se c'è testo attorno
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
+        if start >= 0 and end > start:
+            data = json.loads(raw[start:end])
+            if data.get("nome"):
+                return data
+    except Exception as e:
+        logger.error(f"LLM parse error: {e}")
+    return None
 
 
-def geocode_place(nome: str, zona: str | None) -> tuple[float, float] | None:
-    """Geocodifica un ristorante cercando per nome+zona su OSM."""
+def geocode_place(info: dict) -> tuple[float, float] | None:
+    """Geocodifica usando indirizzo, zona o città."""
     queries = []
+    nome = info.get("nome", "")
+    indirizzo = info.get("indirizzo")
+    citta = info.get("citta")
+    zona = info.get("zona")
+
+    if indirizzo and citta:
+        queries.append(f"{indirizzo}, {citta}, Italia")
+    if indirizzo:
+        queries.append(f"{indirizzo}, Italia")
+    if nome and citta:
+        queries.append(f"{nome}, {citta}, Italia")
+    if zona and citta:
+        queries.append(f"{zona}, {citta}, Italia")
     if zona:
-        queries.append(f"{nome}, {zona}, Italia")
-        queries.append(f"ristorante {nome}, {zona}, Italia")
         queries.append(f"{zona}, Italia")
-    queries.append(f"{nome}, Italia")
+    if citta:
+        queries.append(f"{citta}, Italia")
 
     for q in queries:
         try:
@@ -104,38 +93,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Incolla una recensione e la salvo con posizione.\n"
         "Manda la tua 📍 posizione per trovare i posti più vicini.\n\n"
         "Comandi:\n"
-        "/vicino - manda posizione dopo questo comando\n"
         "/lista - tutti i posti salvati\n"
-        "/cerca <testo> - cerca per nome/zona\n"
+        "/cerca <testo> - cerca per nome/zona/città\n"
+        "/elimina - rimuovi un posto\n"
         "/stats - statistiche",
         parse_mode="Markdown"
     )
 
 
 async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Quando qualcuno manda la posizione, mostra i posti più vicini."""
     user_loc = (update.message.location.latitude, update.message.location.longitude)
     db = load_db()
     if not db:
         await update.message.reply_text("Nessun posto salvato ancora!")
         return
-
-    # Calcola distanze
     results = []
     for place in db:
         if place.get("lat") and place.get("lon"):
             dist = geodesic(user_loc, (place["lat"], place["lon"])).km
             results.append((dist, place))
-
     if not results:
-        await update.message.reply_text("Nessun posto con coordinate. Aggiungi recensioni!")
+        await update.message.reply_text("Nessun posto con coordinate!")
         return
-
     results.sort(key=lambda x: x[0])
-    top = results[:5]
-
     msg = "📍 *Posti più vicini:*\n\n"
-    for i, (dist, p) in enumerate(top, 1):
+    for i, (dist, p) in enumerate(results[:5], 1):
         prezzo = f" · ~{p['prezzo']}€" if p.get("prezzo") else ""
         msg += f"{i}. *{p['nome']}*{prezzo}\n"
         msg += f"   📏 {dist:.1f} km"
@@ -145,28 +127,27 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if p.get("piatti"):
             msg += f"   🍽️ {', '.join(p['piatti'][:3])}\n"
         msg += "\n"
-
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Quando qualcuno scrive testo, prova a parsarlo come recensione."""
     text = update.message.text
     if not text or len(text) < 50:
-        return  # Ignora messaggi corti
+        return
 
-    info = parse_review(text)
+    info = parse_review_llm(text)
     if not info:
-        return  # Non sembra una recensione
+        return
 
-    # Geocodifica
-    coords = geocode_place(info["nome"], info["zona"])
+    coords = geocode_place(info)
+    zona_display = info.get("indirizzo") or info.get("zona") or info.get("citta")
 
     entry = {
         "nome": info["nome"],
-        "zona": info["zona"],
-        "prezzo": info["prezzo"],
-        "piatti": info["piatti"],
+        "zona": zona_display,
+        "citta": info.get("citta"),
+        "prezzo": info.get("prezzo_persona"),
+        "piatti": info.get("piatti", []),
         "lat": coords[0] if coords else None,
         "lon": coords[1] if coords else None,
         "aggiunto_da": update.message.from_user.first_name,
@@ -174,15 +155,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     db = load_db()
-    # Evita duplicati per nome
     if not any(p["nome"].lower() == entry["nome"].lower() for p in db):
         db.append(entry)
         save_db(db)
-        geo_status = "📍 Posizione trovata!" if coords else "⚠️ Posizione non trovata (aggiungi manualmente)"
+        geo_status = "📍 Posizione trovata!" if coords else "⚠️ Posizione non trovata"
+        piatti_str = "\n🍽️ " + ", ".join(entry["piatti"][:4]) if entry["piatti"] else ""
         await update.message.reply_text(
             f"✅ *{entry['nome']}* salvato!\n"
-            f"📍 {entry['zona'] or 'Zona non specificata'}\n"
-            f"💰 {'~' + str(entry['prezzo']) + '€' if entry['prezzo'] else 'Prezzo non specificato'}\n"
+            f"📍 {zona_display or 'N/A'}\n"
+            f"💰 {'~' + str(entry['prezzo']) + '€/persona' if entry['prezzo'] else 'N/A'}"
+            f"{piatti_str}\n"
             f"{geo_status}",
             parse_mode="Markdown"
         )
@@ -198,7 +180,7 @@ async def lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = "📋 *Tutti i posti:*\n\n"
     for i, p in enumerate(db, 1):
         prezzo = f" · ~{p['prezzo']}€" if p.get("prezzo") else ""
-        geo = " 📍" if p.get("lat") else " ❌🗺️"
+        geo = " 📍" if p.get("lat") else ""
         msg += f"{i}. *{p['nome']}*{prezzo}{geo}\n"
         if p.get("zona"):
             msg += f"   {p['zona']}\n"
@@ -211,7 +193,7 @@ async def cerca(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Uso: /cerca <nome o zona>")
         return
     db = load_db()
-    results = [p for p in db if query in p.get("nome", "").lower() or query in (p.get("zona") or "").lower()]
+    results = [p for p in db if query in p.get("nome", "").lower() or query in (p.get("zona") or "").lower() or query in (p.get("citta") or "").lower()]
     if not results:
         await update.message.reply_text(f"Nessun risultato per '{query}'")
         return
@@ -232,17 +214,16 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     geo_count = sum(1 for p in db if p.get("lat"))
     prezzi = [p["prezzo"] for p in db if p.get("prezzo")]
     avg = sum(prezzi) / len(prezzi) if prezzi else 0
-    msg = (
+    await update.message.reply_text(
         f"📊 *Statistiche:*\n\n"
         f"🍽️ Posti salvati: {len(db)}\n"
         f"📍 Con posizione: {geo_count}/{len(db)}\n"
-        f"💰 Prezzo medio: ~{avg:.0f}€\n"
+        f"💰 Prezzo medio: ~{avg:.0f}€\n",
+        parse_mode="Markdown"
     )
-    await update.message.reply_text(msg, parse_mode="Markdown")
 
 
 async def elimina(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Elimina un posto per numero dalla lista."""
     if not context.args:
         db = load_db()
         if not db:
