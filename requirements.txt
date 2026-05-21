@@ -1,0 +1,2 @@
+python-telegram-bot==21.3
+geopy==2.4.1
