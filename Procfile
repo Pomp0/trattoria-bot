@@ -1,1 +1,1 @@
-worker: python bot.py
+worker: TELEGRAM_BOT_TOKEN=8961858964:AAF5R38A6qTTTr0OMkUmZOe1K2RkMuCvV0o python bot.py
