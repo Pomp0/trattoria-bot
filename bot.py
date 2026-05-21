@@ -38,11 +38,24 @@ def parse_review(text: str) -> dict | None:
         m = re.search(r"[\"'«]([A-Z][A-Za-zÀ-ú\s'']+?)[\"'»]", text)
         if m:
             info["nome"] = m.group(1).strip()
+    if not info["nome"]:
+        # Pattern: "Nome" seguito da "a/in via/piazza" o ", un/una"
+        m = re.search(r"(?:^|[\n,])\s*([A-Z][A-Za-zÀ-ú\s'']+?)\s+(?:a |in |di )?(?:via|piazza|zona|corso)", text, re.MULTILINE)
+        if m:
+            info["nome"] = m.group(1).strip().rstrip(",")
+    if not info["nome"]:
+        m = re.search(r"(?:^|[\n,])\s*([A-Z][A-Za-zÀ-ú\s'']+?),\s+(?:un|una|il|la|lo)", text, re.MULTILINE)
+        if m:
+            info["nome"] = m.group(1).strip()
 
-    # Zona: cerca "Zona X" o "(Zona X)" o città tra parentesi
+    # Zona: cerca "Zona X", "(Zona X)", indirizzo "via/piazza X", o città
     m = re.search(r"\(?[Zz]ona\s+([A-Za-zÀ-ú\s]+)\)?", text)
     if m:
         info["zona"] = m.group(1).strip().rstrip(")")
+    if not info["zona"]:
+        m = re.search(r"(?:a |in )?(via|piazza|corso|viale|largo)\s+([A-Za-zÀ-ú\s]+?)(?:\s*[,()\n]|\s+un)", text, re.IGNORECASE)
+        if m:
+            info["zona"] = f"{m.group(1)} {m.group(2).strip()}"
     if not info["zona"]:
         m = re.search(r"(ROMA|Roma|Milano|Napoli|Torino|Firenze|Bologna)[^)]*\(([^)]+)\)", text)
         if m:
