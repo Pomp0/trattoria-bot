@@ -9,7 +9,15 @@ from geopy.distance import geodesic
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+if not TOKEN:
+    env_file = Path(__file__).parent / ".env"
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            if line.startswith("TELEGRAM_BOT_TOKEN="):
+                TOKEN = line.split("=", 1)[1].strip()
+if not TOKEN:
+    raise SystemExit("TELEGRAM_BOT_TOKEN not set. Add it as env variable or in .env file.")
 DB_PATH = Path(__file__).parent / "db.json"
 geolocator = Nominatim(user_agent="trattoria_bot")
 
