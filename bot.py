@@ -30,13 +30,12 @@ def parse_review(text: str) -> dict | None:
     """Estrae nome, zona, prezzo e piatti da un testo di recensione."""
     info = {"nome": None, "zona": None, "prezzo": None, "piatti": [], "testo": text}
 
-    # Nome: cerca pattern comuni
-    # "Sono stato al/alla/all' NOME" o "NOME" tra apici/virgolette
-    m = re.search(r"(?:stato|andat[oa]|provato|mangiato)\s+(?:al(?:l[''a]?)?|da)\s+([A-Z][A-Za-zÀ-ú\s'']+)", text)
+    # Nome: cerca pattern comuni, taglia a congiunzione/punteggiatura
+    m = re.search(r"(?:stato|andat[oa]|provato|mangiato)\s+(?:al(?:l[''a]?)?|da)\s+([A-Z][A-Za-zÀ-ú\s'']+?)(?:\s+[eè]\s|\s*[.,;!?\n]|\s+sono|\s+per|\s+dove|\s+che)", text)
     if m:
-        info["nome"] = m.group(1).strip().rstrip(".,;!")
+        info["nome"] = m.group(1).strip()
     if not info["nome"]:
-        m = re.search(r"[\"'«]([A-Z][A-Za-zÀ-ú\s'']+)[\"'»]", text)
+        m = re.search(r"[\"'«]([A-Z][A-Za-zÀ-ú\s'']+?)[\"'»]", text)
         if m:
             info["nome"] = m.group(1).strip()
 
@@ -68,13 +67,13 @@ def parse_review(text: str) -> dict | None:
 
 
 def geocode_place(nome: str, zona: str | None) -> tuple[float, float] | None:
-    """Geocodifica un ristorante."""
+    """Geocodifica un ristorante cercando per nome+zona su OSM."""
     queries = []
     if zona:
         queries.append(f"{nome}, {zona}, Italia")
-        queries.append(f"{nome}, {zona}")
+        queries.append(f"ristorante {nome}, {zona}, Italia")
+        queries.append(f"{zona}, Italia")
     queries.append(f"{nome}, Italia")
-    queries.append(nome)
 
     for q in queries:
         try:
