@@ -228,12 +228,39 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 
+async def elimina(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Elimina un posto per numero dalla lista."""
+    if not context.args:
+        db = load_db()
+        if not db:
+            await update.message.reply_text("Nessun posto salvato!")
+            return
+        msg = "🗑️ *Quale vuoi eliminare?*\n\n"
+        for i, p in enumerate(db, 1):
+            msg += f"{i}. {p['nome']}\n"
+        msg += "\nUsa: `/elimina <numero>`"
+        await update.message.reply_text(msg, parse_mode="Markdown")
+        return
+    try:
+        idx = int(context.args[0]) - 1
+        db = load_db()
+        if 0 <= idx < len(db):
+            removed = db.pop(idx)
+            save_db(db)
+            await update.message.reply_text(f"🗑️ *{removed['nome']}* eliminato!", parse_mode="Markdown")
+        else:
+            await update.message.reply_text("Numero non valido!")
+    except ValueError:
+        await update.message.reply_text("Uso: `/elimina <numero>`", parse_mode="Markdown")
+
+
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("lista", lista))
     app.add_handler(CommandHandler("cerca", cerca))
     app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("elimina", elimina))
     app.add_handler(MessageHandler(filters.LOCATION, handle_location))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     logger.info("Bot avviato!")
